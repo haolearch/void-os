@@ -168,6 +168,50 @@ Main relationships:
 - Employees can be assigned to projects through project_members.
 - Employees may also be referenced in tasks, approvals, and other operational workflows.
 
+## Documents
+
+### document_categories
+Purpose: Define organization-specific classifications for documents and file metadata.
+Main relationships:
+- Supports hierarchical categories for contracts, drawings, invoices, receipts, supplier documents, legal records, and internal files.
+- Each category belongs to one organization and may have a parent category within the same organization.
+
+### documents
+Purpose: Represent one logical document independently from the underlying file versions.
+Main relationships:
+- Each document belongs to one organization and optionally one document category.
+- One document has many document_versions and many document_links.
+- The current_version_id references the current file version for the document.
+- Documents may later be linked to customers, suppliers, projects, quotations, contracts, payments, purchase orders, project expenses, office expenses, and financial transactions through explicit document links.
+
+### document_versions
+Purpose: Store immutable metadata for each uploaded or generated file version while keeping the file content in Supabase Storage.
+Main relationships:
+- Each version belongs to one document and one organization.
+- The schema stores storage_bucket, storage_path, mime_type, file size, checksum, and other metadata but not binary content.
+- Only one current version is allowed per document, while older versions remain available for history.
+
+### document_links
+Purpose: Connect a document to one explicit business record while preserving tenant-safe foreign-key integrity.
+Main relationships:
+- Each link belongs to one document and one organization.
+- The link targets exactly one of the supported business records through explicit nullable foreign-key columns.
+- Supports primary and supporting documents, receipts, invoices, contracts, drawings, photos, reports, and other roles.
+
+### document_access_grants
+Purpose: Store business-level sharing intent for future collaboration features.
+Main relationships:
+- Provides access grants for either a user or a contact, but never both.
+- Each grant belongs to one document and one organization.
+- The structure is separate from RLS and supports later policy or service-driven sharing workflows.
+
+### Supabase Storage model
+Purpose: Keep the storage layer separate from PostgreSQL document records.
+Main relationships:
+- PostgreSQL stores metadata, version history, classification, link targets, and audit information.
+- document_versions.storage_bucket and document_versions.storage_path reference the future Supabase Storage object location.
+- Binary content, base64 payloads, MIME payloads beyond metadata, and storage policies are intentionally not stored in PostgreSQL.
+
 ## Documents and system
 
 ### attachments

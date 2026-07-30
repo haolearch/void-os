@@ -298,6 +298,65 @@ erDiagram
         date expense_date
     }
 
+    DOCUMENT_CATEGORIES {
+        uuid id PK
+        uuid organization_id FK
+        uuid parent_id FK
+        text code
+        text name
+        boolean is_active
+    }
+
+    DOCUMENTS {
+        uuid id PK
+        uuid organization_id FK
+        uuid document_category_id FK
+        text code
+        text title
+        enum status
+        enum visibility
+        enum source
+        uuid current_version_id FK
+    }
+
+    DOCUMENT_VERSIONS {
+        uuid id PK
+        uuid organization_id FK
+        uuid document_id FK
+        integer version_number
+        enum status
+        text storage_bucket
+        text storage_path
+        text mime_type
+        bigint file_size_bytes
+    }
+
+    DOCUMENT_LINKS {
+        uuid id PK
+        uuid organization_id FK
+        uuid document_id FK
+        enum attachment_role
+        uuid customer_id FK
+        uuid supplier_id FK
+        uuid project_id FK
+        uuid quotation_id FK
+        uuid contract_id FK
+        uuid payment_id FK
+        uuid purchase_order_id FK
+        uuid project_expense_id FK
+        uuid office_expense_id FK
+        uuid financial_transaction_id FK
+    }
+
+    DOCUMENT_ACCESS_GRANTS {
+        uuid id PK
+        uuid organization_id FK
+        uuid document_id FK
+        uuid user_id FK
+        uuid contact_id FK
+        enum access_level
+    }
+
     FOLDERS {
         uuid id PK
         uuid organization_id FK
@@ -435,6 +494,27 @@ erDiagram
 
     ORGANIZATIONS ||--o{ OFFICE_EXPENSES : incurs
     EXPENSE_CATEGORIES ||--o{ OFFICE_EXPENSES : categorizes
+
+    ORGANIZATIONS ||--o{ DOCUMENT_CATEGORIES : defines
+    DOCUMENT_CATEGORIES o|--o{ DOCUMENT_CATEGORIES : parent_of
+    ORGANIZATIONS ||--o{ DOCUMENTS : owns
+    DOCUMENT_CATEGORIES o|--o{ DOCUMENTS : classifies
+    DOCUMENTS ||--o{ DOCUMENT_VERSIONS : versions
+    DOCUMENTS o|--o| DOCUMENT_VERSIONS : current_version
+    DOCUMENTS ||--o{ DOCUMENT_LINKS : links_to
+    CUSTOMERS o|--o{ DOCUMENT_LINKS : linked_as
+    SUPPLIERS o|--o{ DOCUMENT_LINKS : linked_as
+    PROJECTS o|--o{ DOCUMENT_LINKS : linked_as
+    QUOTATIONS o|--o{ DOCUMENT_LINKS : linked_as
+    CONTRACTS o|--o{ DOCUMENT_LINKS : linked_as
+    PAYMENTS o|--o{ DOCUMENT_LINKS : linked_as
+    PURCHASE_ORDERS o|--o{ DOCUMENT_LINKS : linked_as
+    PROJECT_EXPENSES o|--o{ DOCUMENT_LINKS : linked_as
+    OFFICE_EXPENSES o|--o{ DOCUMENT_LINKS : linked_as
+    FINANCIAL_TRANSACTIONS o|--o{ DOCUMENT_LINKS : linked_as
+    DOCUMENTS ||--o{ DOCUMENT_ACCESS_GRANTS : grants
+    ORGANIZATION_MEMBERS o|--o{ DOCUMENT_ACCESS_GRANTS : grants_to
+    CONTACTS o|--o{ DOCUMENT_ACCESS_GRANTS : grants_to
 
     ORGANIZATIONS ||--o{ FOLDERS : owns
     PROJECTS o|--o{ FOLDERS : contains

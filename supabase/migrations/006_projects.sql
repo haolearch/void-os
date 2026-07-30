@@ -2,7 +2,7 @@
 -- VOID OS
 -- Migration: 006_projects.sql
 -- Purpose:
---   Create project delivery and task management tables.
+--   Create the project delivery and task management module.
 --
 -- Tables:
 --   1. projects
@@ -11,12 +11,26 @@
 --   4. milestones
 --   5. tasks
 --   6. project_status_history
+--
+-- Multi-tenant rule:
+--   Every table stores organization_id.
+--   Composite foreign keys prevent cross-organization relations.
 -- ============================================================
 
 begin;
 
 -- ============================================================
+-- EMPLOYEES: PREPARE COMPOSITE FOREIGN KEY
+-- Allows other tables to validate employee organization ownership.
+-- ============================================================
+
+alter table public.employees
+  add constraint employees_id_organization_unique
+  unique (id, organization_id);
+
+-- ============================================================
 -- PROJECTS
+-- Main record for an architecture, interior or construction job.
 -- ============================================================
 
 create table public.projects (
@@ -50,6 +64,7 @@ create table public.projects (
   actual_end_date date,
 
   estimated_value numeric(18, 2),
+
   notes text,
   metadata jsonb not null default '{}'::jsonb,
 
@@ -57,8 +72,13 @@ create table public.projects (
   updated_at timestamptz not null default now(),
   deleted_at timestamptz,
 
-  created_by uuid references auth.users(id) on delete set null,
-  updated_by uuid references auth.users(id) on delete set null,
+  created_by uuid
+    references auth.users(id)
+    on delete set null,
+
+  updated_by uuid
+    references auth.users(id)
+    on delete set null,
 
   constraint projects_code_not_blank
     check (length(trim(code)) > 0),
@@ -73,22 +93,31 @@ create table public.projects (
     check (country_code ~ '^[A-Z]{2}$'),
 
   constraint projects_site_area_non_negative
-    check (site_area is null or site_area >= 0),
+    check (
+      site_area is null
+      or site_area >= 0
+    ),
 
   constraint projects_construction_area_non_negative
-    check (construction_area is null or construction_area >= 0),
+    check (
+      construction_area is null
+      or construction_area >= 0
+    ),
 
   constraint projects_estimated_value_non_negative
-    check (estimated_value is null or estimated_value >= 0),
+    check (
+      estimated_value is null
+      or estimated_value >= 0
+    ),
 
-  constraint projects_dates_valid
+  constraint projects_expected_dates_valid
     check (
       expected_end_date is null
       or start_date is null
       or expected_end_date >= start_date
     ),
 
-  constraint projects_actual_end_date_valid
+  constraint projects_actual_dates_valid
     check (
       actual_end_date is null
       or start_date is null
@@ -99,14 +128,28 @@ create table public.projects (
     check (jsonb_typeof(metadata) = 'object')
 );
 
+comment on table public.projects is
+  'Architecture, interior design, construction and related projects.';
+
+comment on column public.projects.code is
+  'Organization-scoped display code, for example DA000001.';
+
+-- Required for tenant-safe composite foreign keys.
 alter table public.projects
   add constraint projects_id_organization_unique
   unique (id, organization_id);
 
+-- Project and customer must belong to the same organization.
 alter table public.projects
   add constraint projects_customer_same_organization_fk
-  foreign key (customer_id, organization_id)
-  references public.customers (id, organization_id)
+  foreign key (
+    customer_id,
+    organization_id
+  )
+  references public.customers (
+    id,
+    organization_id
+  )
   on delete restrict;
 
 create unique index projects_active_code_unique
@@ -141,6 +184,14 @@ create index projects_priority_idx
   )
   where deleted_at is null;
 
+create index projects_expected_end_date_idx
+  on public.projects (
+    organization_id,
+    expected_end_date
+  )
+  where expected_end_date is not null
+    and deleted_at is null;
+
 create index projects_name_search_idx
   on public.projects
   using gin (name gin_trgm_ops)
@@ -148,14 +199,22 @@ create index projects_name_search_idx
 
 -- ============================================================
 -- PROJECT PHASES
+-- Examples:
+--   Concept design
+--   Technical design
+--   Construction
+--   Handover
+--   Warranty
 -- ============================================================
 
 create table public.project_phases (
   id uuid primary key default gen_random_uuid(),
 
-  project_id uuid not null
-    references public.projects(id)
+  organization_id uuid not null
+    references public.organizations(id)
     on delete restrict,
+
+  project_id uuid not null,
 
   name text not null,
   description text,
@@ -171,8 +230,13 @@ create table public.project_phases (
   updated_at timestamptz not null default now(),
   deleted_at timestamptz,
 
-  created_by uuid references auth.users(id) on delete set null,
-  updated_by uuid references auth.users(id) on delete set null,
+  created_by uuid
+    references auth.users(id)
+    on delete set null,
+
+  updated_by uuid
+    references auth.users(id)
+    on delete set null,
 
   constraint project_phases_name_not_blank
     check (length(trim(name)) > 0),
@@ -188,6 +252,30 @@ create table public.project_phases (
     )
 );
 
+comment on table public.project_phases is
+  'Ordered delivery phases belonging to a project.';
+
+alter table public.project_phases
+  add constraint project_phases_project_same_organization_fk
+  foreign key (
+    project_id,
+    organization_id
+  )
+  references public.projects (
+    id,
+    organization_id
+  )
+  on delete restrict;
+
+-- Used by milestones and tasks to verify they belong to the same project.
+alter table public.project_phases
+  add constraint project_phases_id_project_organization_unique
+  unique (
+    id,
+    project_id,
+    organization_id
+  );
+
 create unique index project_phases_active_name_unique
   on public.project_phases (
     project_id,
@@ -197,6 +285,7 @@ create unique index project_phases_active_name_unique
 
 create index project_phases_project_idx
   on public.project_phases (
+    organization_id,
     project_id,
     sort_order
   )
@@ -204,22 +293,37 @@ create index project_phases_project_idx
 
 create index project_phases_status_idx
   on public.project_phases (
+    organization_id,
     project_id,
     status
   )
   where deleted_at is null;
 
+create index project_phases_due_date_idx
+  on public.project_phases (
+    organization_id,
+    due_date
+  )
+  where due_date is not null
+    and deleted_at is null;
+
 -- ============================================================
 -- PROJECT MEMBERS
+-- Connects employees to projects.
 -- ============================================================
 
 create table public.project_members (
   id uuid primary key default gen_random_uuid(),
 
+  organization_id uuid not null
+    references public.organizations(id)
+    on delete restrict,
+
   project_id uuid not null,
   employee_id uuid not null,
 
   role public.project_member_role not null default 'collaborator',
+
   is_primary boolean not null default false,
   is_active boolean not null default true,
 
@@ -232,8 +336,13 @@ create table public.project_members (
   updated_at timestamptz not null default now(),
   deleted_at timestamptz,
 
-  created_by uuid references auth.users(id) on delete set null,
-  updated_by uuid references auth.users(id) on delete set null,
+  created_by uuid
+    references auth.users(id)
+    on delete set null,
+
+  updated_by uuid
+    references auth.users(id)
+    on delete set null,
 
   constraint project_members_removed_after_assigned
     check (
@@ -242,36 +351,43 @@ create table public.project_members (
     )
 );
 
-alter table public.project_members
-  add constraint project_members_project_employee_unique
-  unique (project_id, employee_id);
+comment on table public.project_members is
+  'Employees and collaborators assigned to projects.';
 
 alter table public.project_members
   add constraint project_members_project_same_organization_fk
-  foreign key (project_id)
-  references public.projects(id)
+  foreign key (
+    project_id,
+    organization_id
+  )
+  references public.projects (
+    id,
+    organization_id
+  )
   on delete restrict;
 
 alter table public.project_members
-  add constraint project_members_employee_fk
-  foreign key (employee_id)
-  references public.employees(id)
+  add constraint project_members_employee_same_organization_fk
+  foreign key (
+    employee_id,
+    organization_id
+  )
+  references public.employees (
+    id,
+    organization_id
+  )
   on delete restrict;
 
-create index project_members_project_idx
+-- One active assignment for an employee in one project.
+-- A soft-deleted assignment can later be recreated.
+create unique index project_members_active_project_employee_unique
   on public.project_members (
     project_id,
-    is_active
+    employee_id
   )
   where deleted_at is null;
 
-create index project_members_employee_idx
-  on public.project_members (
-    employee_id,
-    is_active
-  )
-  where deleted_at is null;
-
+-- Only one primary member for each project role.
 create unique index project_members_primary_role_unique
   on public.project_members (
     project_id,
@@ -281,35 +397,66 @@ create unique index project_members_primary_role_unique
     and is_active = true
     and deleted_at is null;
 
+create index project_members_project_idx
+  on public.project_members (
+    organization_id,
+    project_id,
+    is_active
+  )
+  where deleted_at is null;
+
+create index project_members_employee_idx
+  on public.project_members (
+    organization_id,
+    employee_id,
+    is_active
+  )
+  where deleted_at is null;
+
+create index project_members_role_idx
+  on public.project_members (
+    organization_id,
+    project_id,
+    role
+  )
+  where deleted_at is null;
+
 -- ============================================================
 -- MILESTONES
+-- Major project delivery checkpoints.
 -- ============================================================
 
 create table public.milestones (
   id uuid primary key default gen_random_uuid(),
 
-  project_id uuid not null
-    references public.projects(id)
+  organization_id uuid not null
+    references public.organizations(id)
     on delete restrict,
 
-  project_phase_id uuid
-    references public.project_phases(id)
-    on delete set null,
+  project_id uuid not null,
+  project_phase_id uuid,
 
   title text not null,
   description text,
 
   status public.milestone_status not null default 'pending',
+
   due_date date,
   completed_at timestamptz,
+
   sort_order integer not null default 0,
 
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   deleted_at timestamptz,
 
-  created_by uuid references auth.users(id) on delete set null,
-  updated_by uuid references auth.users(id) on delete set null,
+  created_by uuid
+    references auth.users(id)
+    on delete set null,
+
+  updated_by uuid
+    references auth.users(id)
+    on delete set null,
 
   constraint milestones_title_not_blank
     check (length(trim(title)) > 0),
@@ -318,8 +465,48 @@ create table public.milestones (
     check (sort_order >= 0)
 );
 
+comment on table public.milestones is
+  'Major delivery checkpoints within a project.';
+
+alter table public.milestones
+  add constraint milestones_project_same_organization_fk
+  foreign key (
+    project_id,
+    organization_id
+  )
+  references public.projects (
+    id,
+    organization_id
+  )
+  on delete restrict;
+
+-- The phase must belong to the same project and organization.
+alter table public.milestones
+  add constraint milestones_phase_same_project_fk
+  foreign key (
+    project_phase_id,
+    project_id,
+    organization_id
+  )
+  references public.project_phases (
+    id,
+    project_id,
+    organization_id
+  )
+  on delete restrict;
+
+-- Used by tasks for same-project validation.
+alter table public.milestones
+  add constraint milestones_id_project_organization_unique
+  unique (
+    id,
+    project_id,
+    organization_id
+  );
+
 create index milestones_project_idx
   on public.milestones (
+    organization_id,
     project_id,
     sort_order
   )
@@ -327,6 +514,7 @@ create index milestones_project_idx
 
 create index milestones_phase_idx
   on public.milestones (
+    organization_id,
     project_phase_id
   )
   where project_phase_id is not null
@@ -334,6 +522,7 @@ create index milestones_phase_idx
 
 create index milestones_status_idx
   on public.milestones (
+    organization_id,
     project_id,
     status
   )
@@ -341,6 +530,7 @@ create index milestones_status_idx
 
 create index milestones_due_date_idx
   on public.milestones (
+    organization_id,
     due_date
   )
   where due_date is not null
@@ -348,30 +538,23 @@ create index milestones_due_date_idx
 
 -- ============================================================
 -- TASKS
+-- Actionable work items within projects.
+-- Supports phases, milestones, assignees and subtasks.
 -- ============================================================
 
 create table public.tasks (
   id uuid primary key default gen_random_uuid(),
 
-  project_id uuid not null
-    references public.projects(id)
+  organization_id uuid not null
+    references public.organizations(id)
     on delete restrict,
 
-  project_phase_id uuid
-    references public.project_phases(id)
-    on delete set null,
+  project_id uuid not null,
 
-  milestone_id uuid
-    references public.milestones(id)
-    on delete set null,
-
-  assignee_employee_id uuid
-    references public.employees(id)
-    on delete set null,
-
-  parent_task_id uuid
-    references public.tasks(id)
-    on delete set null,
+  project_phase_id uuid,
+  milestone_id uuid,
+  assignee_employee_id uuid,
+  parent_task_id uuid,
 
   title text not null,
   description text,
@@ -393,8 +576,13 @@ create table public.tasks (
   updated_at timestamptz not null default now(),
   deleted_at timestamptz,
 
-  created_by uuid references auth.users(id) on delete set null,
-  updated_by uuid references auth.users(id) on delete set null,
+  created_by uuid
+    references auth.users(id)
+    on delete set null,
+
+  updated_by uuid
+    references auth.users(id)
+    on delete set null,
 
   constraint tasks_title_not_blank
     check (length(trim(title)) > 0),
@@ -407,10 +595,16 @@ create table public.tasks (
     ),
 
   constraint tasks_estimated_hours_non_negative
-    check (estimated_hours is null or estimated_hours >= 0),
+    check (
+      estimated_hours is null
+      or estimated_hours >= 0
+    ),
 
   constraint tasks_actual_hours_non_negative
-    check (actual_hours is null or actual_hours >= 0),
+    check (
+      actual_hours is null
+      or actual_hours >= 0
+    ),
 
   constraint tasks_sort_order_non_negative
     check (sort_order >= 0),
@@ -419,8 +613,91 @@ create table public.tasks (
     check (jsonb_typeof(metadata) = 'object')
 );
 
+comment on table public.tasks is
+  'Actionable project work items, assignments and subtasks.';
+
+alter table public.tasks
+  add constraint tasks_project_same_organization_fk
+  foreign key (
+    project_id,
+    organization_id
+  )
+  references public.projects (
+    id,
+    organization_id
+  )
+  on delete restrict;
+
+-- Optional phase must belong to the same project.
+alter table public.tasks
+  add constraint tasks_phase_same_project_fk
+  foreign key (
+    project_phase_id,
+    project_id,
+    organization_id
+  )
+  references public.project_phases (
+    id,
+    project_id,
+    organization_id
+  )
+  on delete restrict;
+
+-- Optional milestone must belong to the same project.
+alter table public.tasks
+  add constraint tasks_milestone_same_project_fk
+  foreign key (
+    milestone_id,
+    project_id,
+    organization_id
+  )
+  references public.milestones (
+    id,
+    project_id,
+    organization_id
+  )
+  on delete restrict;
+
+-- Optional assignee must belong to the same organization.
+alter table public.tasks
+  add constraint tasks_assignee_same_organization_fk
+  foreign key (
+    assignee_employee_id,
+    organization_id
+  )
+  references public.employees (
+    id,
+    organization_id
+  )
+  on delete restrict;
+
+-- Required for tenant-safe task hierarchy.
+alter table public.tasks
+  add constraint tasks_id_project_organization_unique
+  unique (
+    id,
+    project_id,
+    organization_id
+  );
+
+-- A parent task must belong to the same project and organization.
+alter table public.tasks
+  add constraint tasks_parent_same_project_fk
+  foreign key (
+    parent_task_id,
+    project_id,
+    organization_id
+  )
+  references public.tasks (
+    id,
+    project_id,
+    organization_id
+  )
+  on delete restrict;
+
 create index tasks_project_idx
   on public.tasks (
+    organization_id,
     project_id,
     status
   )
@@ -428,6 +705,7 @@ create index tasks_project_idx
 
 create index tasks_phase_idx
   on public.tasks (
+    organization_id,
     project_phase_id
   )
   where project_phase_id is not null
@@ -435,6 +713,7 @@ create index tasks_phase_idx
 
 create index tasks_milestone_idx
   on public.tasks (
+    organization_id,
     milestone_id
   )
   where milestone_id is not null
@@ -442,6 +721,7 @@ create index tasks_milestone_idx
 
 create index tasks_assignee_idx
   on public.tasks (
+    organization_id,
     assignee_employee_id,
     status
   )
@@ -450,6 +730,7 @@ create index tasks_assignee_idx
 
 create index tasks_due_date_idx
   on public.tasks (
+    organization_id,
     due_date
   )
   where due_date is not null
@@ -457,6 +738,7 @@ create index tasks_due_date_idx
 
 create index tasks_parent_idx
   on public.tasks (
+    organization_id,
     parent_task_id
   )
   where parent_task_id is not null
@@ -469,14 +751,17 @@ create index tasks_title_search_idx
 
 -- ============================================================
 -- PROJECT STATUS HISTORY
+-- Stores every project status change.
 -- ============================================================
 
 create table public.project_status_history (
   id uuid primary key default gen_random_uuid(),
 
-  project_id uuid not null
-    references public.projects(id)
+  organization_id uuid not null
+    references public.organizations(id)
     on delete restrict,
+
+  project_id uuid not null,
 
   previous_status public.project_status,
   new_status public.project_status not null,
@@ -486,6 +771,7 @@ create table public.project_status_history (
     on delete set null,
 
   changed_at timestamptz not null default now(),
+
   reason text,
   metadata jsonb not null default '{}'::jsonb,
 
@@ -499,21 +785,38 @@ create table public.project_status_history (
     check (jsonb_typeof(metadata) = 'object')
 );
 
+comment on table public.project_status_history is
+  'Immutable history of project status changes.';
+
+alter table public.project_status_history
+  add constraint project_status_history_project_same_organization_fk
+  foreign key (
+    project_id,
+    organization_id
+  )
+  references public.projects (
+    id,
+    organization_id
+  )
+  on delete restrict;
+
 create index project_status_history_project_idx
   on public.project_status_history (
+    organization_id,
     project_id,
     changed_at desc
   );
 
-create index project_status_history_new_status_idx
+create index project_status_history_status_idx
   on public.project_status_history (
+    organization_id,
     new_status,
     changed_at desc
   );
 
 -- ============================================================
 -- ROW LEVEL SECURITY
--- Policies will be created later.
+-- Policies will be created in a later migration.
 -- ============================================================
 
 alter table public.projects enable row level security;
